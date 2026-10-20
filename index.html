@@ -1,0 +1,435 @@
+
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gold Miner Classic</title>
+<style>
+*{box-sizing:border-box}
+body{
+  margin:0;background:#17121e;color:#fff;
+  font-family:Arial,sans-serif;text-align:center;
+}
+h1{color:#ffd54a;text-shadow:0 0 12px #ff9900;margin:14px 0}
+.game{
+  width:min(900px,100%);margin:auto;padding:10px;
+}
+.hud{
+  display:flex;justify-content:space-around;flex-wrap:wrap;
+  gap:10px;margin:12px 0;font-weight:bold;
+}
+.hud span{color:#ffe36b}
+canvas{
+  display:block;width:100%;height:auto;
+  border:4px solid #a66b36;border-radius:8px;
+  background:#e7c27e;touch-action:manipulation;
+}
+button{
+  border:0;border-radius:10px;padding:13px 22px;
+  margin:8px;background:#ffbf32;color:#36200b;
+  font-size:16px;font-weight:bold;cursor:pointer;
+}
+button:hover{background:#ffe078}
+.note{color:#d4c9df;font-size:13px;line-height:1.6}
+</style>
+</head>
+<body>
+<div class="game">
+<h1>⛏️ GOLD MINER CLASSIC</h1>
+<div class="hud">
+<div>💰 Tiền: <span id="money">$0</span></div>
+<div>🎯 Mục tiêu: <span id="goal">$500</span></div>
+<div>⏱️ Thời gian: <span id="time">60</span>s</div>
+<div>📍 Màn: <span id="level">1</span></div>
+</div>
+
+<canvas id="game" width="800" height="520"></canvas>
+
+<div>
+<button id="start">▶ Bắt đầu / Chơi lại</button>
+<button id="sound">🔊 Âm thanh: Bật</button>
+</div>
+<p class="note">
+Nhấn SPACE hoặc chạm vào màn hình để thả móc câu.<br>
+Vàng nhỏ: $50 · Vàng lớn: $150 · Kim cương: $300 · Đá: $10<br>
+Kéo vật phẩm lên để nhận tiền. Đạt mục tiêu trước khi hết giờ!
+</p>
+</div>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+
+const ui = {
+ money: document.getElementById("money"),
+ goal: document.getElementById("goal"),
+ time: document.getElementById("time"),
+ level: document.getElementById("level")
+};
+
+let money=0, level=1, time=60;
+let running=false, phase="ready";
+let angle=0, direction=1, rope=45;
+let target=null, objects=[], particles=[];
+let lastTime=0, timer=0, spawnTimer=0;
+let soundOn=true, audio=null;
+let message="NHẤN BẮT ĐẦU ĐỂ ĐÀO VÀNG";
+let messageTimer=0;
+const miner={x:400,y:60};
+
+function beep(freq=500,duration=.08){
+  if(!soundOn)return;
+  try{
+    audio ||= new (window.AudioContext||window.webkitAudioContext)();
+    if(audio.state==="suspended")audio.resume();
+    const osc=audio.createOscillator();
+    const gain=audio.createGain();
+    osc.type="sine";
+    osc.frequency.value=freq;
+    gain.gain.value=.08;
+    osc.connect(gain);gain.connect(audio.destination);
+    osc.start();gain.gain.exponentialRampToValueAtTime(
+      .001,audio.currentTime+duration
+    );
+    osc.stop(audio.currentTime+duration);
+  }catch(e){}
+}
+
+function goal(){return 500+(level-1)*350}
+function updateHUD(){
+  ui.money.textContent="$"+money;
+  ui.goal.textContent="$"+goal();
+  ui.time.textContent=Math.ceil(time);
+  ui.level.textContent=level;
+}
+
+function makeObject(x,y,type,size,value){
+  return {x,y,type,size,value,rotation:Math.random()*6,
+    glow:Math.random()*6};
+}
+
+function populate(){
+  objects=[];
+  for(let i=0;i<12;i++){
+    const r=Math.random();
+    let type,size,value;
+    if(r<.48){
+      type="gold";size=18+Math.random()*12;value=size>27?150:50;
+    }else if(r<.62){
+      type="diamond";size=14;value=300;
+    }else if(r<.84){
+      type="rock";size=16+Math.random()*12;value=10;
+    }else{
+      type="gold";size=32;value=150;
+    }
+    const x=35+Math.random()*730;
+    const y=180+Math.random()*295;
+    objects.push(makeObject(x,y,type,size,value));
+  }
+}
+
+function reset(){
+  money=0;level=1;time=60;
+  phase="ready";running=false;
+  angle=0;direction=1;rope=45;target=null;
+  particles=[];populate();
+  message="NHẤN BẮT ĐẦU ĐỂ ĐÀO VÀNG";
+  messageTimer=999;
+  updateHUD();
+}
+
+function start(){
+  money=0;level=1;time=60;
+  angle=0;direction=1;rope=45;target=null;
+  particles=[];populate();
+  phase="swing";running=true;
+  timer=0;spawnTimer=0;
+  message="ĐÀO VÀNG!";
+  messageTimer=1.5;
+  lastTime=performance.now();
+  updateHUD();
+  beep(650);
+}
+
+function shoot(){
+  if(!running)return;
+  if(phase==="swing"){
+    phase="out";
+    rope=45;
+    beep(700,.05);
+  }
+}
+
+function finishRound(){
+  running=false;phase="over";target=null;
+  message="HẾT GIỜ! NHẤN CHƠI LẠI";
+  messageTimer=999;
+  beep(180,.4);
+}
+
+function burst(x,y,color){
+  for(let i=0;i<12;i++){
+    const a=Math.random()*Math.PI*2;
+    const speed=30+Math.random()*100;
+    particles.push({
+      x,y,vx:Math.cos(a)*speed,vy:Math.sin(a)*speed,
+      life:.5+Math.random()*.5,color
+    });
+  }
+}
+
+function drawGold(o){
+  ctx.save();
+  ctx.translate(o.x,o.y);
+  ctx.rotate(o.rotation);
+  ctx.shadowColor="#ffb900";
+  ctx.shadowBlur=8;
+  ctx.fillStyle="#f4a900";
+  ctx.strokeStyle="#ffe57b";
+  ctx.lineWidth=3;
+  ctx.beginPath();
+  ctx.moveTo(-o.size*.85,-o.size*.35);
+  ctx.lineTo(-o.size*.35,-o.size*.85);
+  ctx.lineTo(o.size*.55,-o.size*.7);
+  ctx.lineTo(o.size*.9,-o.size*.1);
+  ctx.lineTo(o.size*.55,o.size*.65);
+  ctx.lineTo(-o.size*.45,o.size*.75);
+  ctx.lineTo(-o.size*.9,o.size*.2);
+  ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.restore();
+}
+
+function drawDiamond(o){
+  ctx.save();ctx.translate(o.x,o.y);
+  ctx.shadowColor="#43e8ff";ctx.shadowBlur=14;
+  ctx.fillStyle="#65f2ff";ctx.strokeStyle="#e2ffff";ctx.lineWidth=2;
+  ctx.beginPath();
+  ctx.moveTo(0,-o.size);ctx.lineTo(o.size*.85,-o.size*.2);
+  ctx.lineTo(0,o.size);ctx.lineTo(-o.size*.85,-o.size*.2);
+  ctx.closePath();ctx.fill();ctx.stroke();
+  ctx.beginPath();ctx.moveTo(0,-o.size);ctx.lineTo(0,o.size);
+  ctx.moveTo(-o.size*.85,-o.size*.2);ctx.lineTo(o.size*.85,-o.size*.2);
+  ctx.stroke();ctx.restore();
+}
+
+function drawRock(o){
+  ctx.save();ctx.translate(o.x,o.y);
+  ctx.fillStyle="#77777f";ctx.strokeStyle="#c4c4ce";ctx.lineWidth=2;
+  ctx.beginPath();
+  for(let i=0;i<8;i++){
+    const a=i*Math.PI/4;
+    const r=o.size*(.75+(i%3)*.12);
+    const x=Math.cos(a)*r,y=Math.sin(a)*r;
+    if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+  }
+  ctx.closePath();ctx.fill();ctx.stroke();ctx.restore();
+}
+
+function drawMiner(){
+  ctx.save();
+  ctx.translate(miner.x,miner.y);
+  ctx.fillStyle="#493020";
+  ctx.fillRect(-17,-5,34,25);
+  ctx.fillStyle="#e9b17a";
+  ctx.beginPath();ctx.arc(0,-17,12,0,Math.PI*2);ctx.fill();
+  ctx.fillStyle="#76502b";
+  ctx.fillRect(-14,-31,28,8);
+  ctx.fillStyle="#f8ca32";
+  ctx.fillRect(-17,-34,34,7);
+  ctx.strokeStyle="#493020";ctx.lineWidth=7;
+  ctx.beginPath();ctx.moveTo(-10,14);ctx.lineTo(-16,28);
+  ctx.moveTo(10,14);ctx.lineTo(16,28);ctx.stroke();
+  ctx.strokeStyle="#f4d8a0";ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(-18,-1);ctx.lineTo(-29,10);
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawBackground(){
+  const g=ctx.createLinearGradient(0,0,0,H);
+  g.addColorStop(0,"#f7dda0");
+  g.addColorStop(1,"#c58b4b");
+  ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle="#a66c37";
+  ctx.fillRect(0,105,W,9);
+  ctx.fillStyle="#d8a05a";
+  ctx.fillRect(0,114,W,5);
+
+  ctx.fillStyle="rgba(105,59,24,.12)";
+  for(let i=0;i<45;i++){
+    const x=(i*137)%W,y=125+(i*79)%390;
+    ctx.beginPath();ctx.arc(x,y,2+(i%3),0,Math.PI*2);ctx.fill();
+  }
+
+  ctx.fillStyle="#5c351e";
+  ctx.fillRect(0,H-12,W,12);
+}
+
+function drawHook(){
+  const rad=angle*Math.PI/180;
+  const endX=miner.x+Math.sin(rad)*rope;
+  const endY=miner.y+Math.cos(rad)*rope;
+
+  ctx.strokeStyle="#55402d";ctx.lineWidth=4;
+  ctx.beginPath();ctx.moveTo(miner.x,miner.y);
+  ctx.lineTo(endX,endY);ctx.stroke();
+
+  ctx.save();ctx.translate(endX,endY);
+  ctx.strokeStyle="#dddfe5";ctx.lineWidth=4;
+  ctx.beginPath();
+  ctx.moveTo(-5,-2);ctx.lineTo(4,3);ctx.lineTo(10,10);
+  ctx.arc(2,10,8,0,Math.PI*.95,false);
+  ctx.stroke();ctx.restore();
+}
+
+function draw(){
+  drawBackground();
+
+  objects.forEach(o=>{
+    if(o.type==="gold")drawGold(o);
+    else if(o.type==="diamond")drawDiamond(o);
+    else drawRock(o);
+  });
+
+  if(target){
+    if(target.type==="gold")drawGold(target);
+    else if(target.type==="diamond")drawDiamond(target);
+    else drawRock(target);
+  }
+
+  drawMiner();
+  drawHook();
+
+  particles.forEach(p=>{
+    ctx.globalAlpha=Math.max(0,p.life);
+    ctx.fillStyle=p.color;
+    ctx.fillRect(p.x,p.y,4,4);
+  });
+  ctx.globalAlpha=1;
+
+  if(messageTimer>0&&message){
+    ctx.save();
+    ctx.fillStyle="rgba(35,20,12,.8)";
+    ctx.fillRect(125,215,550,70);
+    ctx.fillStyle="#ffe26b";
+    ctx.font="bold 25px Arial";
+    ctx.textAlign="center";
+    ctx.fillText(message,W/2,258);
+    ctx.restore();
+  }
+}
+
+function update(dt){
+  if(messageTimer>0&&messageTimer<900)messageTimer-=dt;
+
+  if(!running)return;
+
+  timer+=dt;
+  if(timer>=1){
+    timer-=1;
+    time=Math.max(0,time-1);
+    updateHUD();
+  }
+  if(time<=0){finishRound();return;}
+
+  if(phase==="swing"){
+    angle+=direction*55*dt;
+    if(angle>65){angle=65;direction=-1}
+    if(angle< -65){angle=-65;direction=1}
+  }
+
+  if(phase==="out"){
+    rope+=240*dt;
+    const rad=angle*Math.PI/180;
+    const x=miner.x+Math.sin(rad)*rope;
+    const y=miner.y+Math.cos(rad)*rope;
+    const hit=objects.find(o=>
+      Math.hypot(o.x-x,o.y-y)<o.size+9
+    );
+
+    if(hit){
+      target=hit;
+      objects=objects.filter(o=>o!==hit);
+      phase="in";
+      beep(300,.1);
+      burst(hit.x,hit.y,hit.type==="diamond"?"#5df4ff":"#ffdb53");
+    }else if(rope>560||x<0||x>W||y>H){
+      phase="in";target=null;
+    }
+  }
+
+  if(phase==="in"){
+    const speed=target?(target.type==="rock"?100:target.type==="diamond"?300:190):280;
+    rope-=speed*dt;
+
+    if(target){
+      const rad=angle*Math.PI/180;
+      target.x=miner.x+Math.sin(rad)*rope;
+      target.y=miner.y+Math.cos(rad)*rope;
+    }
+
+    if(rope<=45){
+      rope=45;
+      if(target){
+        money+=target.value;
+        burst(miner.x,miner.y,"#ffdd58");
+        beep(500+Math.min(target.value,400),.12);
+        target=null;
+        updateHUD();
+
+        if(money>=goal()){
+          level++;
+          time=60;
+          populate();
+          phase="swing";
+          angle=0;direction=1;
+          message="HOÀN THÀNH! MÀN "+(level-1);
+          messageTimer=2;
+          beep(850,.25);
+          updateHUD();
+          return;
+        }
+      }
+      phase="swing";
+    }
+  }
+
+  particles.forEach(p=>{
+    p.x+=p.vx*dt;p.y+=p.vy*dt;
+    p.vy+=100*dt;p.life-=dt;
+  });
+  particles=particles.filter(p=>p.life>0);
+}
+
+function loop(now){
+  const dt=Math.min((now-lastTime)/1000||0,.04);
+  lastTime=now;
+  update(dt);draw();
+  requestAnimationFrame(loop);
+}
+
+document.getElementById("start").addEventListener("click",start);
+document.getElementById("sound").addEventListener("click",e=>{
+  soundOn=!soundOn;
+  e.currentTarget.textContent=soundOn?"🔊 Âm thanh: Bật":"🔇 Âm thanh: Tắt";
+  if(soundOn)beep();
+});
+
+window.addEventListener("keydown",e=>{
+  if(e.code==="Space"){
+    e.preventDefault();
+    shoot();
+  }
+});
+
+canvas.addEventListener("pointerdown",shoot);
+
+reset();
+lastTime=performance.now();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
